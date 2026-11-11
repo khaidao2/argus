@@ -50,6 +50,19 @@ def _fmt_message(m: dict) -> str:
             f"{m.get('from')} ({m.get('from_kind')}) -> {m.get('body')}")
 
 
+
+def _with_agent(args, arguments: dict) -> dict:
+    """Add --agent when given.
+
+    The hub refuses rather than guesses when one owner has several agents in a
+    conversation, because picking one would attribute the message to the wrong
+    agent and the record would look entirely ordinary while being wrong.
+    """
+    if getattr(args, "agent", None):
+        arguments["agent"] = args.agent
+    return arguments
+
+
 def cmd_login(args) -> int:
     session = do_login(url=(args.url or DEFAULT_URL), machine=args.machine,
                        label=args.label, open_browser=not args.no_browser)
@@ -116,7 +129,7 @@ def cmd_inbox(args) -> int:
         arguments["include_unaddressed"] = True
     if args.limit:
         arguments["limit"] = args.limit
-    payload = Client(s.url, s.key).call("chat_inbox", arguments)
+    payload = Client(s.url, s.key).call("chat_inbox", _with_agent(args, arguments))
 
     def render(p):
         if not p["waiting"]:
@@ -131,9 +144,9 @@ def cmd_inbox(args) -> int:
 
 def cmd_ack(args) -> int:
     s = _session_or_exit(args)
-    payload = Client(s.url, s.key).call("chat_ack", {
+    payload = Client(s.url, s.key).call("chat_ack", _with_agent(args, {
         "conversation": args.conversation, "seq": args.seq,
-        "outcome": args.outcome, "detail": args.detail or ""})
+        "outcome": args.outcome, "detail": args.detail or ""}))
     _emit(args, payload, lambda p: print(f"#{p['seq']} is now {p['state']}."))
     return 0
 
@@ -145,9 +158,7 @@ def cmd_heartbeat(args) -> int:
         arguments["state"] = args.state
     if args.session:
         arguments["session"] = args.session
-    if args.agent:
-        arguments["agent"] = args.agent
-    payload = Client(s.url, s.key).call("chat_heartbeat", arguments)
+    payload = Client(s.url, s.key).call("chat_heartbeat", _with_agent(args, arguments))
     _emit(args, payload, lambda p: print(
         f"{p['session']} is {p['state']}, lease until {p['lease_expires_at']}"))
     return 0
@@ -158,9 +169,7 @@ def cmd_end(args) -> int:
     arguments = {"reason": args.reason or "stopped by the runtime"}
     if args.session:
         arguments["session"] = args.session
-    if args.agent:
-        arguments["agent"] = args.agent
-    payload = Client(s.url, s.key).call("chat_session_end", arguments)
+    payload = Client(s.url, s.key).call("chat_session_end", _with_agent(args, arguments))
     _emit(args, payload, lambda p: (
         print(f"{p['session']} ended at {p['ended_at']}."),
         print("You are still a participant. Anything addressed to you is "
@@ -194,7 +203,7 @@ def cmd_agents(args) -> int:
 def cmd_sessions(args) -> int:
     s = _session_or_exit(args)
     payload = Client(s.url, s.key).call("chat_sessions", {
-        "agent": args.agent, "live_only": bool(args.live)})
+        "agent": args.which_agent, "live_only": bool(args.live)})
 
     def render(p):
         for x in p["sessions"]:
@@ -208,16 +217,14 @@ def cmd_sessions(args) -> int:
 
 def cmd_join(args) -> int:
     s = _session_or_exit(args)
-    arguments = {
+    arguments = _with_agent(args, {
         "conversation": args.conversation,
         "display_name": args.name,
         "agent_backend": args.backend,
         "agent_session": args.session,
-    }
+    })
     if args.capability:
         arguments["capabilities"] = args.capability
-    if args.agent:
-        arguments["agent"] = args.agent
     if args.streaming:
         arguments["supports_streaming"] = True
     payload = Client(s.url, s.key).call("chat_join", arguments)
@@ -231,7 +238,8 @@ def cmd_join(args) -> int:
 
 def cmd_who(args) -> int:
     s = _session_or_exit(args)
-    payload = Client(s.url, s.key).call("chat_who", {"conversation": args.conversation})
+    payload = Client(s.url, s.key).call(
+        "chat_who", _with_agent(args, {"conversation": args.conversation}))
     def render(p):
         for part in p.get("participants", []):
             you = "  <- you" if part["participant_id"] == p.get("you") else ""
@@ -254,7 +262,7 @@ def cmd_send(args) -> int:
     if args.id:
         # The one identifier a client controls, so a retry cannot double-post.
         arguments["client_message_id"] = args.id
-    payload = Client(s.url, s.key).call("chat_send", arguments)
+    payload = Client(s.url, s.key).call("chat_send", _with_agent(args, arguments))
     _emit(args, payload, lambda p: print(
         f"Sent as #{p['seq']}." + (
             f" Named: {', '.join(p['mentioned'])}" if p.get("mentioned")
@@ -274,7 +282,7 @@ def cmd_read(args) -> int:
         arguments["limit"] = args.limit
 
     if not args.follow:
-        payload = c.call("chat_read", arguments)
+        payload = c.call("chat_read", _with_agent(args, arguments))
         _emit(args, payload, lambda p: [print(_fmt_message(m)) for m in p["messages"]]
               or print("(nothing new)"))
         return 0
@@ -285,7 +293,7 @@ def cmd_read(args) -> int:
     deadline = time.monotonic() + args.timeout if args.timeout else None
     while True:
         arguments["after_seq"] = after
-        payload = c.call("chat_read", arguments)
+        payload = c.call("chat_read", _with_agent(args, arguments))
         for m in payload["messages"]:
             print(_fmt_message(m), flush=True)
         after = payload["next_after_seq"]
@@ -330,6 +338,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true",
                    help="print the hub's structured payload instead of a rendering")
     p.add_argument("--url", help=f"hub base URL (default: the logged-in one, else {DEFAULT_URL})")
+    p.add_argument("--agent",
+                   help="which of your agents is speaking. Needed only when "
+                        "you own more than one in the same conversation.")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("login", help="log in through the browser and save a session key")
@@ -361,8 +372,6 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--backend", default="argus", help="which agent runtime this is")
     sp.add_argument("--session", help="this run's id. Without one there is no "
                                       "session to heartbeat or end.")
-    sp.add_argument("--agent", help="stable slug for your agent identity; "
-                                    "defaults to the display name")
     sp.add_argument("--capability", action="append",
                     help="something you can do, for discovery; repeatable")
     sp.add_argument("--streaming", action="store_true",
@@ -389,14 +398,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--state", choices=["active", "idle", "waiting"],
                     help="waiting means blocked on something outside you")
     sp.add_argument("--session", help="which run, when you have several live")
-    sp.add_argument("--agent", help="which agent, when you own several")
     sp.set_defaults(func=cmd_heartbeat)
 
     sp = sub.add_parser(
         "end", help="end this run cleanly; you stay in the conversation")
     sp.add_argument("--reason")
     sp.add_argument("--session")
-    sp.add_argument("--agent")
     sp.set_defaults(func=cmd_end)
 
     sp = sub.add_parser("agents", help="who is available to work")
@@ -406,7 +413,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_agents)
 
     sp = sub.add_parser("sessions", help="every run of an agent, and its state")
-    sp.add_argument("agent")
+    sp.add_argument("which_agent", metavar="agent")
     sp.add_argument("--live", action="store_true")
     sp.set_defaults(func=cmd_sessions)
 
