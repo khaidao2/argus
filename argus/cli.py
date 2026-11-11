@@ -109,17 +109,94 @@ def cmd_open(args) -> int:
     return 0
 
 
+def cmd_heartbeat(args) -> int:
+    s = _session_or_exit(args)
+    arguments = {}
+    if args.state:
+        arguments["state"] = args.state
+    if args.session:
+        arguments["session"] = args.session
+    if args.agent:
+        arguments["agent"] = args.agent
+    payload = Client(s.url, s.key).call("chat_heartbeat", arguments)
+    _emit(args, payload, lambda p: print(
+        f"{p['session']} is {p['state']}, lease until {p['lease_expires_at']}"))
+    return 0
+
+
+def cmd_end(args) -> int:
+    s = _session_or_exit(args)
+    arguments = {"reason": args.reason or "stopped by the runtime"}
+    if args.session:
+        arguments["session"] = args.session
+    if args.agent:
+        arguments["agent"] = args.agent
+    payload = Client(s.url, s.key).call("chat_session_end", arguments)
+    _emit(args, payload, lambda p: (
+        print(f"{p['session']} ended at {p['ended_at']}."),
+        print("You are still a participant. Anything addressed to you is "
+              "waiting for your next session.")))
+    return 0
+
+
+def cmd_agents(args) -> int:
+    s = _session_or_exit(args)
+    arguments = {}
+    if args.capability:
+        arguments["capability"] = args.capability
+    if args.all:
+        arguments["include_inactive"] = True
+    payload = Client(s.url, s.key).call("chat_agents", arguments)
+
+    def render(p):
+        if not p.get("agents"):
+            print("No agents.")
+            return
+        for a in p["agents"]:
+            reach = ("reachable" if a["responsive_sessions"]
+                     else ("live but silent" if a["live_sessions"] else "no session"))
+            caps = ", ".join(a["capabilities"]) or "-"
+            print(f"{a['agent']:<22} {a['runtime']:<14} {a['status']:<9} "
+                  f"{reach:<16} {caps}")
+    _emit(args, payload, render)
+    return 0
+
+
+def cmd_sessions(args) -> int:
+    s = _session_or_exit(args)
+    payload = Client(s.url, s.key).call("chat_sessions", {
+        "agent": args.agent, "live_only": bool(args.live)})
+
+    def render(p):
+        for x in p["sessions"]:
+            when = x["ended_at"] or x["last_heartbeat_at"]
+            print(f"{x['session']:<18} {x['state']:<13} "
+                  f"{'responsive' if x['responsive'] else '          '} "
+                  f"{str(when)[:19]}  {x['end_reason'] or x['last_cause'] or ''}")
+    _emit(args, payload, render)
+    return 0
+
+
 def cmd_join(args) -> int:
     s = _session_or_exit(args)
-    payload = Client(s.url, s.key).call("chat_join", {
+    arguments = {
         "conversation": args.conversation,
         "display_name": args.name,
         "agent_backend": args.backend,
         "agent_session": args.session,
-    })
+    }
+    if args.capability:
+        arguments["capabilities"] = args.capability
+    if args.agent:
+        arguments["agent"] = args.agent
+    if args.streaming:
+        arguments["supports_streaming"] = True
+    payload = Client(s.url, s.key).call("chat_join", arguments)
     _emit(args, payload, lambda p: print(
         f"Joined {args.conversation} as {p['label']} "
-        f"(participant {p['participant_id']}). Machine {p['machine']} came from the key."))
+        f"(participant {p['participant_id']}).\n"
+        f"You are the agent {p.get('agent')!r} on node {p.get('node')}, "
+        f"session {p.get('session_state') or 'none declared'}."))
     return 0
 
 
@@ -253,8 +330,41 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("conversation")
     sp.add_argument("name", help="display name, e.g. the agent's name")
     sp.add_argument("--backend", default="argus", help="which agent runtime this is")
-    sp.add_argument("--session", help="the agent's own session id, to tell two apart")
+    sp.add_argument("--session", help="this run's id. Without one there is no "
+                                      "session to heartbeat or end.")
+    sp.add_argument("--agent", help="stable slug for your agent identity; "
+                                    "defaults to the display name")
+    sp.add_argument("--capability", action="append",
+                    help="something you can do, for discovery; repeatable")
+    sp.add_argument("--streaming", action="store_true",
+                    help="declare that this runtime can stream")
     sp.set_defaults(func=cmd_join)
+
+    sp = sub.add_parser(
+        "heartbeat", help="tell the hub this run is still alive")
+    sp.add_argument("--state", choices=["active", "idle", "waiting"],
+                    help="waiting means blocked on something outside you")
+    sp.add_argument("--session", help="which run, when you have several live")
+    sp.add_argument("--agent", help="which agent, when you own several")
+    sp.set_defaults(func=cmd_heartbeat)
+
+    sp = sub.add_parser(
+        "end", help="end this run cleanly; you stay in the conversation")
+    sp.add_argument("--reason")
+    sp.add_argument("--session")
+    sp.add_argument("--agent")
+    sp.set_defaults(func=cmd_end)
+
+    sp = sub.add_parser("agents", help="who is available to work")
+    sp.add_argument("--capability", help="only agents declaring this")
+    sp.add_argument("--all", action="store_true",
+                    help="include suspended and retired agents")
+    sp.set_defaults(func=cmd_agents)
+
+    sp = sub.add_parser("sessions", help="every run of an agent, and its state")
+    sp.add_argument("agent")
+    sp.add_argument("--live", action="store_true")
+    sp.set_defaults(func=cmd_sessions)
 
     sp = sub.add_parser("who", help="who is in a conversation, and on which machine")
     sp.add_argument("conversation")
