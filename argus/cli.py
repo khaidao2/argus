@@ -109,6 +109,35 @@ def cmd_open(args) -> int:
     return 0
 
 
+def cmd_inbox(args) -> int:
+    s = _session_or_exit(args)
+    arguments = {"conversation": args.conversation}
+    if args.all:
+        arguments["include_unaddressed"] = True
+    if args.limit:
+        arguments["limit"] = args.limit
+    payload = Client(s.url, s.key).call("chat_inbox", arguments)
+
+    def render(p):
+        if not p["waiting"]:
+            print("Nothing waiting for you.")
+            return
+        for w in p["waiting"]:
+            print(f"[{w['seq']}] {w['state']:<10} from {w['from']}")
+            print(f"      {w['body']}")
+    _emit(args, payload, render)
+    return 0
+
+
+def cmd_ack(args) -> int:
+    s = _session_or_exit(args)
+    payload = Client(s.url, s.key).call("chat_ack", {
+        "conversation": args.conversation, "seq": args.seq,
+        "outcome": args.outcome, "detail": args.detail or ""})
+    _emit(args, payload, lambda p: print(f"#{p['seq']} is now {p['state']}."))
+    return 0
+
+
 def cmd_heartbeat(args) -> int:
     s = _session_or_exit(args)
     arguments = {}
@@ -339,6 +368,21 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--streaming", action="store_true",
                     help="declare that this runtime can stream")
     sp.set_defaults(func=cmd_join)
+
+    sp = sub.add_parser(
+        "inbox", help="what is still waiting for you, across sessions")
+    sp.add_argument("conversation")
+    sp.add_argument("--all", action="store_true",
+                    help="include messages that did not name you")
+    sp.add_argument("--limit", type=int)
+    sp.set_defaults(func=cmd_inbox)
+
+    sp = sub.add_parser("ack", help="say what happened to a message")
+    sp.add_argument("conversation")
+    sp.add_argument("seq", type=int)
+    sp.add_argument("outcome", choices=["read", "processed", "failed"])
+    sp.add_argument("--detail", help="the reason, especially when it failed")
+    sp.set_defaults(func=cmd_ack)
 
     sp = sub.add_parser(
         "heartbeat", help="tell the hub this run is still alive")

@@ -86,11 +86,70 @@ everyone else sees.
 | `argus who <room>` | Participants, with the machine each is on |
 | `argus send <room> <body>` | Say something; `--to <id>` names a participant |
 | `argus read <room>` | Read messages; `--mine`, `--follow`, `--after <seq>` |
+| `argus heartbeat` | Hold this run's lease; `--state idle\|waiting` says what you are doing |
+| `argus end` | End this run cleanly. You stay in the conversation |
+| `argus inbox <room>` | What is still waiting for you, across sessions |
+| `argus ack <room> <seq>` | Report `read`, `processed` or `failed` |
+| `argus agents` | Who is available to work, and reachable |
+| `argus sessions <agent>` | Every run of an agent, and why each one ended |
 | `argus machines` | Which bare metals the hub has seen |
 | `argus tools` | What the hub offers over MCP |
 
 Add `--json` to any command to get the hub's structured payload instead of a
 rendering. Agents should use it rather than parsing the human output.
+
+## Sessions, and what happens when one ends
+
+An **agent** is an identity. A **session** is one run of it. They are different
+things with different lifetimes, and that is what makes the rest work.
+
+```sh
+argus join lab worker --backend omp --session run-1   # start a run
+argus heartbeat --state idle                          # hold the lease
+argus end --reason "shift over"                       # stop cleanly
+```
+
+**Ending a run does not leave the conversation.** You stay a member. Anything
+addressed to you while you are gone waits, and your next session reads it:
+
+```sh
+argus join lab worker --backend omp --session run-2
+argus inbox lab          # what arrived while you were away
+argus ack lab 41 processed --detail "migration applied"
+```
+
+A session holds a **lease** it has to renew. Silence past the lease marks it
+`disconnected`, which is reversible: a machine that was merely partitioned
+comes back and carries on. Silence past the grace period marks it `lost` and
+releases its claim on work. A machine that loses power never gets to announce
+anything, so silence has to be the signal.
+
+A terminal session cannot be revived under its old id. Coming back means a new
+`--session`, which leaves the dead one's record intact.
+
+```sh
+argus sessions worker
+run-1   ended        2026-11-12 01:40:11  shift over
+run-2   active       responsive  2026-11-12 02:02:55
+```
+
+## Saying what happened to a message
+
+`--to` addresses a message to someone. The recipient owes an outcome on it, and
+`argus inbox` is the list of what it still owes. Reporting is explicit:
+
+```sh
+argus ack lab 41 processed
+argus ack lab 42 failed --detail "no credentials for that cluster"
+```
+
+This exists because an agent that crashes between reading a task and finishing
+it is otherwise indistinguishable from one that completed it, so the work is
+either dropped or done twice.
+
+Delivery is **at least once**. You can be handed the same message twice, so
+dedupe on `seq`. Exactly-once is not offered, because it is not achievable
+across machines without you deduplicating anyway.
 
 ## Two agents, two machines
 
