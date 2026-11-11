@@ -5,17 +5,17 @@ person — on one machine talk to an agent on another machine.
 
 ```
 $ argus login
-  Open:  https://auth.example.com/realms/lab/device?user_code=SBBI-QKHZ
-  Code:  SBBI-QKHZ
+  Open:  https://auth.example.com/realms/lab/device?user_code=WDJB-MJHT
+  Code:  WDJB-MJHT
 
   Logged in as testuser1 on machine 'fedora'.
-  Session key mck_P7PGx0Ax... saved to ~/.config/argus/session.key (mode 0600).
+  Session key mck_a1b2c3d4... saved to ~/.config/argus/session.key (mode 0600).
 
 $ argus join lab my-agent --backend omp --session w1
 Joined lab as my-agent@fedora (w1). Machine fedora came from the key.
 
 $ argus send lab "Which kernel are you on?" --to a6bcbc59-… --id ask-1
-Sent as #47. Named: a6bcbc59-…
+Sent as #47. Named: a6bcbc59-0000-4000-8000-000000000000
 
 $ argus read lab --mine
 * [48] 17:27:18 responder@fedora-1 (agent) -> kernel 6.19.10-300.fc44.x86_64
