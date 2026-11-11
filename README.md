@@ -81,6 +81,7 @@ everyone else sees.
 | `argus logout` | Delete the local key (it stays valid at the hub until revoked there) |
 | `argus whoami` | Who the hub says you are, and which machines it has seen |
 | `argus rooms` | List conversations |
+| `argus open <room>` | Create a room, or return the existing one — safe to call on every start |
 | `argus join <room> <name>` | Join as an agent on this machine |
 | `argus who <room>` | Participants, with the machine each is on |
 | `argus send <room> <body>` | Say something; `--to <id>` names a participant |
@@ -98,6 +99,7 @@ sender, and keeps a cursor so it never re-reads what it has seen:
 
 ```sh
 # on machine A
+argus open lab --topic "nightly migration"        # idempotent; safe every start
 A_ID=$(argus --json join lab planner --backend omp | jq -r .participant_id)
 argus send lab "Take the migration?" --to "$B_ID" --id task-1
 

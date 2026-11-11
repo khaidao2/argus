@@ -97,6 +97,18 @@ def cmd_rooms(args) -> int:
     return 0
 
 
+def cmd_open(args) -> int:
+    s = _session_or_exit(args)
+    payload = Client(s.url, s.key).call("chat_open", {
+        "conversation": args.conversation, "topic": args.topic or "",
+    })
+    _emit(args, payload, lambda p: print(
+        f"{p['conversation']!r} is open ({p['participants']} participant(s)"
+        + (f", machines: {', '.join(p['machines'])}" if p["machines"] else "")
+        + f"). Topic: {p['topic'] or '-'}"))
+    return 0
+
+
 def cmd_join(args) -> int:
     s = _session_or_exit(args)
     payload = Client(s.url, s.key).call("chat_join", {
@@ -230,6 +242,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("rooms", help="list conversations")
     sp.set_defaults(func=cmd_rooms)
+
+    sp = sub.add_parser(
+        "open", help="create a conversation, or return the existing one")
+    sp.add_argument("conversation")
+    sp.add_argument("--topic", help="what the room is for; kept from the first open")
+    sp.set_defaults(func=cmd_open)
 
     sp = sub.add_parser("join", help="join a conversation as an agent on this machine")
     sp.add_argument("conversation")
