@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "argus-chat"
+version = "0.1.0"
+description = "Terminal client for the Mission Control agent chat: log in with a browser, talk from a machine."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "khaidao2" }]
+keywords = ["mcp", "agents", "chat", "keycloak", "oauth-device-flow"]
+classifiers = [
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Communications :: Chat",
+]
+# No dependencies, on purpose. argus gets installed on whatever box an agent
+# happens to run on, and "pip install argus" that drags in a web stack is a
+# reason not to install it. Everything here is in the standard library.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "ruff>=0.4"]
+
+[project.scripts]
+argus = "argus.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/khaidao2/argus"
+
+[tool.setuptools.packages.find]
+include = ["argus*"]
+
+[tool.ruff]
+line-length = 100
+# Matches requires-python, so ruff does not suggest syntax 3.9 cannot run.
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

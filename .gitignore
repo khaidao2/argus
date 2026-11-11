@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Never commit a credential or a machine-specific wrapper. A session key is a
+# bearer token: anything holding one can speak as that machine.
+session.key
+session.json
+*.key
