@@ -14,7 +14,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import pathlib
+import subprocess
 import sys
+import tempfile
 import time
 from typing import Any
 
@@ -411,10 +414,15 @@ def cmd_delegate(args) -> int:
         arguments["conversation"] = args.conversation
     if args.priority is not None:
         arguments["priority"] = args.priority
+    if args.path:
+        arguments["paths"] = args.path
     payload = Client(s.url, s.key).call("task_create", _with_agent(args, arguments))
 
     def render(p):
         print(f"Task {p['short']} created: {p['title']}")
+        if p.get("paths"):
+            print("  touches: " + ", ".join(p["paths"])
+                  + "  (read them with `argus context`)")
         if p.get("assigned_to") is None:
             print("Nobody owns it yet, so nothing will pick it up. "
                   "Give it an owner with `argus handoff`.")
@@ -510,6 +518,158 @@ def cmd_release(args) -> int:
     _emit(args, payload, lambda p: print(
         f"Released {p['short']}. It is still assigned to you and waiting for "
         "your next run."))
+    return 0
+
+
+def _git(*args: str) -> str | None:
+    """A git value from the working tree, or None when there is no tree.
+
+    None rather than an exception: `argus` is useful outside a checkout for
+    everything except the two context commands, and those say so themselves.
+    """
+    try:
+        out = subprocess.run(("git", *args), capture_output=True, text=True,
+                             timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() if out.returncode == 0 else None
+
+
+def _ctx_report(scope: str) -> dict | None:
+    """What ctx says about a path, as a report, or None if it could not say.
+
+    Shelling out to the real binary on purpose. ctx owns every question about
+    what a decision is and whether it changed; re-deriving any of it here would
+    produce a second answer that eventually disagrees with the first.
+    """
+    try:
+        out = subprocess.run(("ctx", "for", scope, "-format", "json"),
+                             capture_output=True, text=True, timeout=30)
+    except FileNotFoundError:
+        print("ctx is not on PATH. Install it to record decision context.",
+              file=sys.stderr)
+        return None
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"ctx failed: {exc}", file=sys.stderr)
+        return None
+    if out.returncode != 0:
+        print(f"ctx for {scope}: {out.stderr.strip()}", file=sys.stderr)
+        return None
+    try:
+        return json.loads(out.stdout)
+    except json.JSONDecodeError:
+        print(f"ctx printed something that is not JSON for {scope}.",
+              file=sys.stderr)
+        return None
+
+
+def cmd_context(args) -> int:
+    s = _session_or_exit(args)
+    client = Client(s.url, s.key)
+
+    if not args.path:
+        payload = client.call("task_context_get", {"task": args.task})
+
+        def render(p):
+            if not p["contexts"]:
+                print("No paths recorded for this task.")
+                print("Record one with `argus context <task> <path>`.")
+                return
+            for c in p["contexts"]:
+                if c["captured"]:
+                    print(f"{c['scope']}")
+                    print(f"  {c['summary']}  at {c['repo_head'][:12]} "
+                          f"from {c['captured_on_machine']} "
+                          f"by {c['captured_by']}")
+                else:
+                    print(f"{c['scope']}")
+                    print(f"  {c['summary']} (declared by {c['declared_by']})")
+            print()
+            print("Run `argus drift <task>` to see what has changed since.")
+        _emit(args, payload, render)
+        return 0
+
+    head = _git("rev-parse", "HEAD")
+    if head is None:
+        print("Not in a git working tree, so there is nothing to read "
+              "decisions from.", file=sys.stderr)
+        return EX_USAGE
+
+    results = []
+    for scope in args.path:
+        report = _ctx_report(scope)
+        if report is None:
+            return EX_USAGE
+        arguments = {"task": args.task, "scope": scope, "report": report,
+                     "repo_head": head}
+        if args.session:
+            arguments["session"] = args.session
+        results.append(client.call("task_context_put",
+                                   _with_agent(args, arguments)))
+
+    def render(_p):
+        for r in results:
+            print(f"{r['scope']}: {r['summary']} at {head[:12]}")
+        print("Whoever picks this task up next can diff against it.")
+    _emit(args, results if args.json else results[-1], render)
+    return 0
+
+
+def cmd_drift(args) -> int:
+    """What has changed in the decisions since this task's baseline was taken.
+
+    The hub holds the baseline; ctx computes the delta. This command only
+    carries one to the other, which is the division of labour the whole
+    feature rests on.
+    """
+    s = _session_or_exit(args)
+    payload = Client(s.url, s.key).call("task_context_get", {"task": args.task})
+    captured = [c for c in payload["contexts"] if c["captured"]]
+    unlooked = [c["scope"] for c in payload["contexts"] if not c["captured"]]
+
+    if not captured:
+        print("No context has been captured for this task, so there is "
+              "nothing to compare against.")
+        if unlooked:
+            print("Declared but never read: " + ", ".join(unlooked))
+            print(f"Capture it with `argus context {args.task} "
+                  + " ".join(unlooked) + "`.")
+        return 0
+
+    if _git("rev-parse", "HEAD") is None:
+        print("Not in a git working tree, so ctx has nothing to compare "
+              "against.", file=sys.stderr)
+        return EX_USAGE
+
+    moved = 0
+    with tempfile.TemporaryDirectory(prefix="argus-ctx-") as tmp:
+        for c in captured:
+            baseline = pathlib.Path(tmp) / f"{abs(hash(c['scope']))}.json"
+            baseline.write_text(json.dumps(c["report"]))
+            try:
+                out = subprocess.run(
+                    ("ctx", "for", c["scope"], "-since", str(baseline)),
+                    capture_output=True, text=True, timeout=30)
+            except FileNotFoundError:
+                print("ctx is not on PATH.", file=sys.stderr)
+                return EX_USAGE
+            delta = out.stdout.strip()
+            if delta:
+                moved += 1
+                print(delta)
+                print()
+            elif args.verbose:
+                print(f"{c['scope']}: unchanged since "
+                      f"{c['repo_head'][:12]} ({c['captured_on_machine']})")
+
+    if moved == 0:
+        print(f"Nothing has changed in {len(captured)} scope(s) since this "
+              "task's context was captured.")
+    else:
+        print(f"{moved} of {len(captured)} scope(s) moved under this task. "
+              "Read the above before reporting it done.")
+    if unlooked:
+        print("Declared but never read: " + ", ".join(unlooked))
     return 0
 
 
@@ -654,6 +814,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="where it is discussed, so the owner is told in the room")
     sp.add_argument("--priority", type=int, metavar="N",
                     help="0 to 100, lower is more urgent. 50 by default")
+    sp.add_argument("--path", action="append", metavar="PATH",
+                    help="a path this task touches; repeatable. Recorded so "
+                         "the owner knows where to read the governing "
+                         "decisions")
     sp.set_defaults(func=cmd_delegate)
 
     sp = sub.add_parser(
@@ -680,6 +844,26 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--reason", required=True,
                     help="why it is going to them. The hub requires one")
     sp.set_defaults(func=cmd_handoff)
+
+    sp = sub.add_parser(
+        "context", help="the decisions governing a task's paths",
+        description=("With no path, prints what has been recorded. With paths, "
+                     "runs `ctx for` on each and records the result so a later "
+                     "run, on any machine, can diff against it."))
+    sp.add_argument("task")
+    sp.add_argument("path", nargs="*",
+                    help="paths to read with ctx and record")
+    sp.add_argument("--session", help="which of your runs this is")
+    sp.set_defaults(func=cmd_context)
+
+    sp = sub.add_parser(
+        "drift", help="what changed in the decisions since the baseline",
+        description=("Fetches this task's baselines and runs `ctx for -since` "
+                     "against your own clone. ctx decides what changed."))
+    sp.add_argument("task")
+    sp.add_argument("--verbose", "-v", action="store_true",
+                    help="also name the scopes that did not move")
+    sp.set_defaults(func=cmd_drift)
 
     sp = sub.add_parser("release", help="release a task hold")
     sp.add_argument("task")

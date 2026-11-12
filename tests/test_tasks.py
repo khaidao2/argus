@@ -10,6 +10,8 @@ returns, so these dictionaries are copied from the hub's own task payload.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from argus.cli import main
@@ -231,3 +233,125 @@ def test_every_task_command_passes_the_agent_flag_through(logged_in_hub):
         sent = logged_in_hub.requests[-1]["params"]
         assert sent["name"] == tool
         assert sent["arguments"]["agent"] == "worker"
+
+
+# -- decision context ---------------------------------------------------------
+
+
+def _ctx_row(**over) -> dict:
+    row = {
+        "scope": "backend/db/migrations/011_argus_tasks.sql",
+        "captured": True,
+        "summary": "2 active",
+        "report": {"scope": "backend/db/migrations/011_argus_tasks.sql",
+                   "active": [], "superseded": [], "orphaned": [],
+                   "open_incidents": []},
+        "report_digest": "a" * 64,
+        "repo_head": "af3cae59dd0dcafe",
+        "ctx_version": "v1.0.0",
+        "captured_by": "testusser1",
+        "captured_on_machine": "fedora",
+        "captured_at": "2026-11-12T02:00:00+00:00",
+        "declared_by": "testusser1",
+    }
+    row.update(over)
+    return row
+
+
+def test_context_with_no_paths_reads_what_was_recorded(logged_in_hub, capsys):
+    """Including which clone it came from, which is what lets a reader judge a
+    report the hub cannot verify."""
+    logged_in_hub.result({"task": "t", "short": "a1b2c3d4",
+                          "contexts": [_ctx_row()]})
+    assert main(["context", "a1b2c3d4"]) == 0
+    out = capsys.readouterr().out
+    assert "2 active" in out
+    assert "from fedora" in out
+    assert "af3cae59dd0d" in out
+    assert logged_in_hub.requests[-1]["params"]["name"] == "task_context_get"
+
+
+def test_a_declared_but_unread_path_is_called_out(logged_in_hub, capsys):
+    """The useful question before closing a task is which paths somebody said
+    it touches that nobody ever read."""
+    logged_in_hub.result({"task": "t", "short": "a1b2c3d4", "contexts": [
+        _ctx_row(captured=False, report=None, report_digest=None,
+                 repo_head=None, captured_by=None, captured_on_machine=None,
+                 captured_at=None, summary="declared, nothing captured yet")]})
+    assert main(["context", "a1b2c3d4"]) == 0
+    assert "declared, nothing captured yet" in capsys.readouterr().out
+
+
+def test_context_with_no_recorded_paths_says_how_to_record_one(
+        logged_in_hub, capsys):
+    logged_in_hub.result({"task": "t", "short": "a1b2c3d4", "contexts": []})
+    assert main(["context", "a1b2c3d4"]) == 0
+    assert "argus context <task> <path>" in capsys.readouterr().out
+
+
+def test_drift_with_no_baseline_does_not_pretend_to_have_checked(
+        logged_in_hub, capsys):
+    """Silence here would read as 'nothing changed', which is the one wrong
+    answer: nothing was compared at all."""
+    logged_in_hub.result({"task": "t", "short": "a1b2c3d4", "contexts": [
+        _ctx_row(captured=False, report=None, summary="declared")]})
+    assert main(["drift", "a1b2c3d4"]) == 0
+    out = capsys.readouterr().out
+    assert "nothing to compare against" in out
+    assert "Declared but never read" in out
+
+
+def test_capturing_runs_ctx_and_sends_the_report_with_its_revision(
+        logged_in_hub, monkeypatch):
+    """ctx owns the report; argus only carries it. The revision travels with
+    it because a report means nothing apart from the commit it came from."""
+    import subprocess
+
+    import argus.cli as cli
+
+    scope = "backend/db/migrations/011_argus_tasks.sql"
+    report = {"scope": scope, "active": [], "superseded": [],
+              "orphaned": [], "open_incidents": []}
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0] == "git":
+            return subprocess.CompletedProcess(cmd, 0, "af3cae59dd0d\n", "")
+        assert cmd[:2] == ("ctx", "for"), cmd
+        assert cmd[2] == scope
+        return subprocess.CompletedProcess(cmd, 0, json.dumps(report), "")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    logged_in_hub.result({"scope": scope, "captured": True,
+                          "summary": "2 active", "report_digest": "b" * 64,
+                          "repo_head": "af3cae59dd0d"})
+    assert main(["context", "a1b2c3d4", scope]) == 0
+
+    sent = logged_in_hub.requests[-1]["params"]
+    assert sent["name"] == "task_context_put"
+    assert sent["arguments"]["scope"] == scope
+    assert sent["arguments"]["report"] == report
+    assert sent["arguments"]["repo_head"] == "af3cae59dd0d"
+
+
+def test_capturing_outside_a_git_tree_refuses_rather_than_recording_nothing(
+        logged_in_hub, monkeypatch, capsys):
+    import argus.cli as cli
+
+    monkeypatch.setattr(cli, "_git", lambda *a: None)
+    assert main(["context", "a1b2c3d4", "some/path.py"]) == 2
+    assert "not in a git working tree" in capsys.readouterr().err.lower()
+    assert logged_in_hub.requests == [], "nothing should have been sent"
+
+
+def test_a_missing_ctx_binary_is_reported_not_swallowed(
+        logged_in_hub, monkeypatch, capsys):
+    import argus.cli as cli
+
+    monkeypatch.setattr(cli, "_git", lambda *a: "af3cae59dd0d")
+
+    def no_ctx(cmd, **kwargs):
+        raise FileNotFoundError(cmd[0])
+
+    monkeypatch.setattr(cli.subprocess, "run", no_ctx)
+    assert main(["context", "a1b2c3d4", "some/path.py"]) == 2
+    assert "ctx is not on PATH" in capsys.readouterr().err
