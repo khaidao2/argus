@@ -1,0 +1,14 @@
+[Unit]
+Description=Keep /opt/argus in step with origin/main
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+# So a box that was switched off catches up on the next boot rather than
+# running code nobody can identify for a full interval.
+Persistent=true
+# Several machines updating in lockstep would hit GitHub together for no reason.
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

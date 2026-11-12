@@ -1,0 +1,13 @@
+[Unit]
+Description=Fast-forward the deployed argus to origin/main
+Documentation=https://github.com/khaidao2/argus
+
+[Service]
+Type=oneshot
+# A user unit rather than a system one: /opt would need root on this box for
+# no benefit, and lingering is enabled so this still runs when nobody is
+# logged in.
+Environment=ARGUS_REPO=%h/.local/share/argus
+ExecStart=%h/.local/bin/argus-update
+# A failed update is not an emergency. The box keeps the version it has.
+SuccessExitStatus=0 1

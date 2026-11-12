@@ -1,0 +1,12 @@
+[Unit]
+Description=Fast-forward /opt/argus to origin/main
+Documentation=https://github.com/khaidao2/argus
+# No network, no update, and that is fine: the working copy still runs.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/argus-update
+# A failed update is not an emergency. The box keeps the version it has.
+SuccessExitStatus=0 1

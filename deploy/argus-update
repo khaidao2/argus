@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# Fast-forward /opt/argus to origin/main.
+#
+# FF-ONLY, NEVER RESET --HARD. A reset would silently discard anything done
+# locally in this tree, including a hand-patch somebody applied at 3am to get a
+# box working. Fast-forward refuses instead, loudly, and leaves the working
+# copy alone. A box that stops updating and says why beats one that quietly
+# throws away the fix keeping it alive.
+#
+# IT SKIPS WHILE ARGUS IS RUNNING. Python imports modules as it reaches them,
+# so rewriting files under a long-lived process -- `argus read --follow`, or an
+# agent mid-poll -- can hand it a mix of two versions. Short CLI runs make that
+# unlikely rather than impossible, and the next tick is only 15 minutes away.
+set -uo pipefail
+# One script, two deployments. fedora-1 keeps the default; the workstation sets
+# ARGUS_REPO, because /opt needs root there for no benefit and a user unit with
+# lingering enabled does the same job.
+REPO="${ARGUS_REPO:-/opt/argus}"
+
+# ANCHORED, and that matters more than it looks. `pgrep -f` matches the whole
+# command line of every process, so the unanchored pattern also matched any
+# shell whose command TEXT merely mentioned argus -- an ssh invocation, this
+# script's own parent. The guard then fired on itself and the update silently
+# never ran. Anchoring to the start of the command line, with an optional
+# directory prefix, matches a real `python3 -m argus` and nothing that is
+# only talking about one.
+if pgrep -f '(^|/)python3 -m argus' >/dev/null 2>&1; then
+    echo 'argus is running; leaving the tree alone until the next tick'
+    exit 0
+fi
+
+before=$(git -C "$REPO" rev-parse --short HEAD)
+if ! git -C "$REPO" fetch --quiet origin main; then
+    echo 'fetch failed; keeping the working copy' >&2
+    exit 1
+fi
+if ! git -C "$REPO" merge --ff-only --quiet origin/main; then
+    echo "cannot fast-forward from $before; this tree has diverged from origin/main and is being left as it is" >&2
+    exit 1
+fi
+after=$(git -C "$REPO" rev-parse --short HEAD)
+if [ "$before" = "$after" ]; then
+    echo "already at $after"
+else
+    # DROP THE BYTECODE, or the update can fail to take effect at all.
+    # Python reuses a .pyc when the source's mtime-in-seconds AND byte size
+    # both match what the .pyc recorded. A fast-forward writes the source with
+    # the current second, and plenty of real changes leave the size identical
+    # -- a version bump from "0.1.0" to "0.2.0" is the same length. An update
+    # applied and run inside the same second then silently executes the old
+    # code, which is precisely the failure this timer exists to prevent.
+    # Measured here: pyc mtime=1794476634 size=92, source mtime=1794476634
+    # size=92, so Python kept 0.1.0 after the tree had moved to 0.2.0.
+    find "$REPO" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null
+    echo "updated $before -> $after"
+fi
+
+# SAY WHEN THE TREE IS AHEAD OF ORIGIN. A fast-forward of a branch that is
+# already ahead succeeds as a no-op, so the lines above would report "already
+# at <sha>" on a box quietly carrying an unpushed commit. That is exactly the
+# "running code nobody can identify" state this whole arrangement exists to
+# end, so it gets said out loud every tick rather than discovered later.
+ahead=$(git -C "$REPO" rev-list --count origin/main..HEAD 2>/dev/null || echo 0)
+if [ "${ahead:-0}" != "0" ]; then
+    echo "WARNING: this tree is $ahead commit(s) ahead of origin/main and is" \
+         "not running a released version:" >&2
+    git -C "$REPO" log --oneline origin/main..HEAD >&2
+fi
+
+# THE UPDATER DOES NOT UPDATE ITSELF, and says so when it falls behind.
+#
+# systemd runs the INSTALLED copy, not this file in the checkout. That is
+# deliberate: running the updater straight out of the tree would mean one bad
+# commit left a box unable to fast-forward to the commit that fixes it. The
+# cost is that a change to this script reaches nobody until it is reinstalled,
+# which is exactly the silent staleness everything else here exists to stop --
+# so it is reported rather than left to be discovered.
+installed="${0}"
+candidate="$REPO/deploy/argus-update"
+if [ -f "$candidate" ] && ! cmp -s "$installed" "$candidate"; then
+    echo "NOTE: $candidate differs from the running $installed." \
+         "Reinstall it with: install -m 755 $candidate $installed" >&2
+fi
