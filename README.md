@@ -94,6 +94,12 @@ everyone else sees.
 | `argus sessions <agent>` | Every run of an agent, and why each one ended |
 | `argus machines` | Which bare metals the hub has seen |
 | `argus tools` | What the hub offers over MCP |
+| `argus delegate <title>` | Create a task; `--to <agent>` or `--to-person <identity>` |
+| `argus tasks` | What is outstanding and **which run is holding each one** |
+| `argus claim [task]` | Take exclusive hold; with no task, the next thing assigned to you |
+| `argus report <task> <state>` | `done`, `failed`, `blocked` or `cancelled` |
+| `argus handoff <task> --to <agent> --reason <why>` | Move responsibility to somebody else |
+| `argus release <task>` | Give up a hold without finishing |
 
 Add `--json` to any command to get the hub's structured payload instead of a
 rendering. Agents should use it rather than parsing the human output.
@@ -150,6 +156,68 @@ either dropped or done twice.
 Delivery is **at least once**. You can be handed the same message twice, so
 dedupe on `seq`. Exactly-once is not offered, because it is not achievable
 across machines without you deduplicating anyway.
+
+## Tasks, and work that survives the run doing it
+
+A task has an **owner**, who is responsible and stays responsible, and
+separately a **claim**, which is the one run doing it right now and dies when
+that run dies. Those are different questions and `argus tasks` answers both:
+
+```
+6e4140bf  in_progress  worker  Rotate the GHCR pull secret  [held by run-2]
+ab129560  assigned     helper  Apply migration 011          (1 handoff)
+```
+
+`[held by run-2]` is the important part. A task that is merely `assigned` is
+waiting for somebody. A held task is being worked on by one named run, and if
+that run has stopped answering the chip says `silent` — which is the only
+symptom a dead agent has.
+
+**Exactly one run can hold a task.** A second claim is refused and told who
+holds it:
+
+```
+$ argus claim ab129560
+Refused: task ab129560-… is already being worked on by session run-1.
+Nothing was claimed. Ask for the next task instead.
+```
+
+**Ending a run does not lose its work.** The claim goes, the ownership stays,
+and the command says what went back:
+
+```
+$ argus end --reason "shift over"
+run-1 ended at 2026-11-12 01:47:51+00:00.
+1 unfinished task(s) went back into your queue rather than being lost:
+  6e4140bf  assigned    Rotate the GHCR pull secret
+```
+
+The same happens without a clean stop, from the hub's side: when a run goes
+silent past its grace period it is declared lost and everything it held is
+released to its agent's queue. The work is never moved to a *different* agent
+automatically, because that would run it twice the moment the original came
+back. Moving work is a handoff, and a handoff is something somebody decides.
+
+**A failed task stays yours.** It is not offered again by a bare `argus
+claim`, so a task that fails every time cannot spin, but you can retry it by
+name or hand it on:
+
+```
+$ argus report ab129560 failed --result "psql is not installed on fedora-1"
+ab129560 is failed.
+It is still assigned to you. Retry it by name, or hand it on with `argus handoff`.
+
+$ argus handoff ab129560 --to helper --reason "helper has psql"
+ab129560 is now helper's.
+```
+
+A reason is required. The new owner needs to know why it came to them, and so
+does whoever reads the history in a month. The handoff is announced in the
+task's room and addressed to the new owner, so it lands in their `argus inbox`
+whether or not they are running.
+
+A task id can be any unique prefix. An ambiguous one is refused with every
+match listed, rather than resolved to the first.
 
 ## Two agents, two machines
 

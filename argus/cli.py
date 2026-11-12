@@ -170,10 +170,21 @@ def cmd_end(args) -> int:
     if args.session:
         arguments["session"] = args.session
     payload = Client(s.url, s.key).call("chat_session_end", _with_agent(args, arguments))
-    _emit(args, payload, lambda p: (
-        print(f"{p['session']} ended at {p['ended_at']}."),
+
+    def render(p):
+        print(f"{p['session']} ended at {p['ended_at']}.")
         print("You are still a participant. Anything addressed to you is "
-              "waiting for your next session.")))
+              "waiting for your next session.")
+        # Named, not counted. An operator who stops a run mid-task needs to
+        # know which work went back into the queue, and the alternative is
+        # finding out from a task list they have no reason to open.
+        freed = p.get("released_tasks") or []
+        if freed:
+            print(f"{len(freed)} unfinished task(s) went back into your queue "
+                  "rather than being lost:")
+            for t in freed:
+                print(f"  {t['short']}  {t['state']:<10}  {t['title']}")
+    _emit(args, payload, render)
     return 0
 
 
