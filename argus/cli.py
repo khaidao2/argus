@@ -330,6 +330,178 @@ def cmd_tools(args) -> int:
     return 0
 
 
+def _held(t: dict) -> str:
+    """How a task row says a run is working on it.
+
+    The most important thing on the line. A task that is merely assigned is
+    waiting for somebody; a task being held is being worked on by one specific
+    run, and a run that has stopped answering may be dead while its work still
+    looks like it is progressing.
+    """
+    held = t.get("held_by")
+    if not held:
+        return ""
+    silent = "" if held.get("responsive") else " silent"
+    return f"  [held by {held.get('session')}{silent}]"
+
+
+def _task_line(t: dict, widths: tuple[int, int, int]) -> str:
+    w_short, w_state, w_owner = widths
+    owner = t.get("assigned_to") or "-"
+    hands = f"  ({t['handoff_count']} handoff)" if t.get("handoff_count") else ""
+    return (f"{t.get('short', ''):<{w_short}}  {t.get('state', ''):<{w_state}}  "
+            f"{owner:<{w_owner}}  {t.get('title', '')}{_held(t)}{hands}")
+
+
+def cmd_tasks(args) -> int:
+    s = _session_or_exit(args)
+    arguments: dict[str, Any] = {}
+    if args.all:
+        arguments["scope"] = "all"
+    if args.conversation:
+        arguments["conversation"] = args.conversation
+    if args.closed:
+        arguments["include_closed"] = True
+    if args.limit is not None:
+        arguments["limit"] = args.limit
+    payload = Client(s.url, s.key).call("task_list", _with_agent(args, arguments))
+
+    def render(p):
+        tasks = p["tasks"]
+        if not tasks:
+            print("No open tasks." if not args.all
+                  else "No tasks in this workspace.")
+            return
+        widths = (
+            max(len(t.get("short", "")) for t in tasks),
+            max(len(t.get("state", "")) for t in tasks),
+            max(len(t.get("assigned_to") or "-") for t in tasks),
+        )
+        for t in tasks:
+            print(_task_line(t, widths))
+    _emit(args, payload, render)
+    return 0
+
+
+def cmd_delegate(args) -> int:
+    s = _session_or_exit(args)
+    # `--detail -` reads stdin, and nothing else does. Reading it whenever
+    # --detail was absent would hang any non-interactive caller, and detail is
+    # optional here, unlike the body of `argus send`.
+    detail = sys.stdin.read().strip() if args.detail == "-" else args.detail
+    arguments: dict[str, Any] = {"title": args.title}
+    if detail:
+        arguments["detail"] = detail
+    if args.to:
+        arguments["assign_to_agent"] = args.to
+    if args.to_person:
+        arguments["assign_to_person"] = args.to_person
+    if args.conversation:
+        arguments["conversation"] = args.conversation
+    if args.priority is not None:
+        arguments["priority"] = args.priority
+    payload = Client(s.url, s.key).call("task_create", _with_agent(args, arguments))
+
+    def render(p):
+        print(f"Task {p['short']} created: {p['title']}")
+        if p.get("assigned_to") is None:
+            print("Nobody owns it yet, so nothing will pick it up. "
+                  "Give it an owner with `argus handoff`.")
+        elif p.get("owner_notified"):
+            print(f"{p['assigned_to']} has it, and will still have it if they "
+                  "are not running now.")
+        else:
+            print(f"{p['assigned_to']} owns it but was not notified; "
+                  "they will see it with `argus tasks`.")
+    _emit(args, payload, render)
+    return 0
+
+
+def cmd_claim(args) -> int:
+    s = _session_or_exit(args)
+    arguments: dict[str, Any] = {}
+    if args.task:
+        arguments["task"] = args.task
+    if args.conversation:
+        arguments["conversation"] = args.conversation
+    if args.session:
+        arguments["session"] = args.session
+    payload = Client(s.url, s.key).call("task_claim", _with_agent(args, arguments))
+
+    def render(p):
+        # `task` is the id, and it is null when nothing was waiting. That null
+        # is an ordinary answer rather than a refusal, so it is not an error.
+        if p.get("task") is None:
+            print("Nothing is waiting for you.")
+            print("A task you failed is not offered again automatically; "
+                  "claim it by name to retry it.")
+            return
+        print(f"You hold {p['short']} ({p['title']}).")
+        if p.get("detail"):
+            print(f"  {p['detail']}")
+        print("It is yours until you report on it, release it, or your "
+              "session ends.")
+    _emit(args, payload, render)
+    return 0
+
+
+def cmd_report(args) -> int:
+    s = _session_or_exit(args)
+    arguments: dict[str, Any] = {"task": args.task, "state": args.state}
+    if args.result:
+        arguments["result"] = args.result
+    if args.reason:
+        arguments["blocked_reason"] = args.reason
+    if args.session:
+        arguments["session"] = args.session
+    payload = Client(s.url, s.key).call("task_report", _with_agent(args, arguments))
+
+    def render(p):
+        print(f"{p['short']} is {p['state']}.")
+        if p["state"] == "failed":
+            print("It is still assigned to you. Retry it by name, or hand it "
+                  "on with `argus handoff`.")
+        elif p["state"] == "blocked":
+            print("Your hold is released. Claim it again to resume.")
+    _emit(args, payload, render)
+    return 0
+
+
+def cmd_handoff(args) -> int:
+    s = _session_or_exit(args)
+    if not (args.to or args.to_person):
+        print("Name who it goes to with --to or --to-person.", file=sys.stderr)
+        return EX_USAGE
+    arguments: dict[str, Any] = {"task": args.task, "reason": args.reason}
+    if args.to:
+        arguments["to_agent"] = args.to
+    if args.to_person:
+        arguments["to_person"] = args.to_person
+    payload = Client(s.url, s.key).call("task_handoff", _with_agent(args, arguments))
+
+    def render(p):
+        print(f"{p['short']} is now {p['assigned_to']}'s.")
+        if not p.get("owner_notified"):
+            print("They were not notified; they will see it with "
+                  "`argus tasks`.")
+    _emit(args, payload, render)
+    return 0
+
+
+def cmd_release(args) -> int:
+    s = _session_or_exit(args)
+    arguments: dict[str, Any] = {"task": args.task}
+    if args.detail:
+        arguments["detail"] = args.detail
+    if args.session:
+        arguments["session"] = args.session
+    payload = Client(s.url, s.key).call("task_release", _with_agent(args, arguments))
+    _emit(args, payload, lambda p: print(
+        f"Released {p['short']}. It is still assigned to you and waiting for "
+        "your next run."))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="argus",
@@ -447,6 +619,62 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("tools", help="what the hub offers over MCP")
     sp.set_defaults(func=cmd_tools)
+
+    sp = sub.add_parser("tasks", help="what work is outstanding, and who holds it")
+    sp.add_argument("--all", action="store_true",
+                    help="everybody's tasks, not just yours")
+    sp.add_argument("--conversation", "-c", help="only tasks raised in this room")
+    sp.add_argument("--closed", action="store_true",
+                    help="include done and cancelled")
+    sp.add_argument("--limit", type=int)
+    sp.set_defaults(func=cmd_tasks)
+
+    sp = sub.add_parser(
+        "delegate", help="create a task, usually assigned to somebody",
+        description="Detail is read from stdin when --detail is not given.")
+    sp.add_argument("title")
+    sp.add_argument("--to", metavar="AGENT",
+                    help="the agent who becomes responsible")
+    sp.add_argument("--to-person", metavar="IDENTITY",
+                    help="the person who becomes responsible")
+    sp.add_argument("--detail", metavar="TEXT",
+                    help="what the owner needs to know. `-` reads stdin")
+    sp.add_argument("--conversation", "-c",
+                    help="where it is discussed, so the owner is told in the room")
+    sp.add_argument("--priority", type=int, metavar="N",
+                    help="0 to 100, lower is more urgent. 50 by default")
+    sp.set_defaults(func=cmd_delegate)
+
+    sp = sub.add_parser(
+        "claim", help="take exclusive hold of a task",
+        description="With no task, takes the most urgent one assigned to you.")
+    sp.add_argument("task", nargs="?", help="a task id or a unique prefix of one")
+    sp.add_argument("--conversation", "-c", help="only pull work from this room")
+    sp.add_argument("--session", help="which of your runs this is")
+    sp.set_defaults(func=cmd_claim)
+
+    sp = sub.add_parser("report", help="say what happened to a task you hold")
+    sp.add_argument("task")
+    sp.add_argument("state", choices=["done", "failed", "blocked", "cancelled"])
+    sp.add_argument("--result", help="what you did, or why you could not")
+    sp.add_argument("--reason", help="what you are blocked on")
+    sp.add_argument("--session", help="which of your runs this is")
+    sp.set_defaults(func=cmd_report)
+
+    sp = sub.add_parser("handoff", help="give a task to somebody else")
+    sp.add_argument("task")
+    sp.add_argument("--to", metavar="AGENT", help="the agent taking it on")
+    sp.add_argument("--to-person", metavar="IDENTITY",
+                    help="the person taking it on")
+    sp.add_argument("--reason", required=True,
+                    help="why it is going to them. The hub requires one")
+    sp.set_defaults(func=cmd_handoff)
+
+    sp = sub.add_parser("release", help="release a task hold")
+    sp.add_argument("task")
+    sp.add_argument("--detail", help="release detail")
+    sp.add_argument("--session", help="session identifier")
+    sp.set_defaults(func=cmd_release)
     return p
 
 
