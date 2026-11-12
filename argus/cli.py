@@ -92,10 +92,16 @@ def cmd_whoami(args) -> int:
     # key itself, and that is the one every other participant will see.
     me = c.call("chat_whoami", {})
     seen = c.call("chat_machines", {}).get("machines", [])
-    _emit(args, {**me, "url": s.url, "machines_seen": seen},
+    # THE CLIENT VERSION, because the first question about a misbehaving box is
+    # which build it is on. A machine that updates itself can still be behind:
+    # its updater may have been refusing to fast-forward for a week, and
+    # nothing else here would say so.
+    _emit(args, {**me, "url": s.url, "client_version": __version__,
+                 "machines_seen": seen},
           lambda p: (
               print(f"{p['identity']} on {p['machine']}  "
                     f"({p['key_prefix']}... at {p['url']})"),
+              print(f"argus {p['client_version']}"),
               print("Machines seen by the hub:"),
               [print(f"  {m['machine']:<20} agents={m['agents']} humans={m['humans']}"
                      f"  last seen {m['last_seen_at']}") for m in p["machines_seen"]],

@@ -430,3 +430,22 @@ def test_runtimes_shows_what_can_be_stopped(logged_in_hub, capsys):
     out = capsys.readouterr().out
     assert "omp" in out and "neither" in out
     assert "stops graceful" in out
+
+
+def test_whoami_reports_the_client_version(logged_in_hub, capsys):
+    """The first question about a misbehaving box is which build it is on.
+
+    A machine that updates itself can still be behind: its updater may have
+    been refusing to fast-forward for a week, and nothing else here would say
+    so.
+    """
+    from argus import __version__
+
+    logged_in_hub.result({"identity": "testusser2", "machine": "fedora-1",
+                          "workspace_id": "ws-1", "key_prefix": "mck_abcd",
+                          "key_label": "k"})
+    logged_in_hub.result({"machines": []})
+    assert main(["whoami"]) == 0
+    out = capsys.readouterr().out
+    assert f"argus {__version__}" in out
+    assert "testusser2 on fedora-1" in out
