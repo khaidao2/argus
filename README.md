@@ -100,6 +100,8 @@ everyone else sees.
 | `argus report <task> <state>` | `done`, `failed`, `blocked` or `cancelled` |
 | `argus handoff <task> --to <agent> --reason <why>` | Move responsibility to somebody else |
 | `argus release <task>` | Give up a hold without finishing |
+| `argus context <task> [paths…]` | Read a path's decisions with `ctx` and record them, or show what is recorded |
+| `argus drift <task>` | What has changed in those decisions since the baseline |
 
 Add `--json` to any command to get the hub's structured payload instead of a
 rendering. Agents should use it rather than parsing the human output.
@@ -218,6 +220,47 @@ whether or not they are running.
 
 A task id can be any unique prefix. An ambiguous one is refused with every
 match listed, rather than resolved to the first.
+
+## The decisions a task was started against
+
+In a repository that uses [`ctx`](https://github.com/khaidao2/ctx), the
+constraints governing a file live in commit trailers, and `ctx for <path>`
+compiles them back out for the lines you are about to edit.
+
+**argus does not re-implement any of that.** `ctx` decides what a decision is
+and what changed; argus carries a baseline from the clone that made it to
+whoever needs it next. That carrying is the part `ctx` cannot do on its own: a
+baseline is a file on one machine, and work here outlives the process that
+wrote it.
+
+```sh
+# the planner says where the work lands, before anyone has looked
+argus delegate "Shorten the session lease" --to worker -c lab \
+  --path backend/src/.../argus_session_repository.py
+
+# the agent reads the real decisions and records them
+argus context e6f5a264 backend/src/.../argus_session_repository.py
+#   backend/src/.../argus_session_repository.py: 2 active at af3cae59dd0d
+
+# later, in any clone, on any machine
+argus drift e6f5a264
+```
+
+When something moved underneath, `ctx` says so in its own words:
+
+```
+changed since your last edit to backend/src/.../argus_session_repository.py:
+superseded:
+  - sha: ebabf9eeba6a -> by b11b0052cece
+    decision: "Measure a session's grace from its last heartbeat, not from the sweep"
+    reason: "the lease is being shortened, so grace no longer needs to exceed it"
+
+1 of 1 scope(s) moved under this task. Read the above before reporting it done.
+```
+
+Both commands need `ctx` on PATH and a git working tree, and say so plainly
+rather than recording nothing. A report is always sent with the commit it was
+taken at, because a report means nothing apart from its revision.
 
 ## Two agents, two machines
 
