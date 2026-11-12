@@ -102,6 +102,8 @@ everyone else sees.
 | `argus release <task>` | Give up a hold without finishing |
 | `argus context <task> [paths…]` | Read a path's decisions with `ctx` and record them, or show what is recorded |
 | `argus drift <task>` | What has changed in those decisions since the baseline |
+| `argus runtimes` | What each agent runtime can be asked to do |
+| `argus cancel <task> --reason <why>` | Ask the run working on a task to stop |
 
 Add `--json` to any command to get the hub's structured payload instead of a
 rendering. Agents should use it rather than parsing the human output.
@@ -261,6 +263,43 @@ superseded:
 Both commands need `ctx` on PATH and a git working tree, and say so plainly
 rather than recording nothing. A report is always sent with the commit it was
 taken at, because a report means nothing apart from its revision.
+
+## Asking work to stop
+
+Cancellation is a **request, not a command**. Nothing in the hub can halt a
+process. The holder is told on the heartbeat it is already sending, and what it
+does next is its own.
+
+```sh
+argus cancel a1b2c3d4 --reason "the migration is wrong"
+# Asked run-1 to stop a1b2c3d4.
+#   semantics: graceful. It is told on its next heartbeat, so this is not
+#   immediate and may never happen.
+```
+
+The holder finds out where it was always going to look:
+
+```sh
+argus heartbeat
+# run-1 is active, lease until 03:00:00
+#   STOP a1b2c3d4 (a long migration) - asked by boss@example.com: it is wrong
+#   Stop if you can, then `argus report <task> cancelled`. If you will not,
+#   say so: nobody can tell from the hub.
+```
+
+**Not every runtime can be stopped.** `argus runtimes` says which can, and
+asking one that cannot tells you so immediately rather than leaving you
+waiting:
+
+```
+omp: omp cannot be interrupted. The request is on the record, but nothing will
+reach the run; it keeps the task until it finishes or its session ends, and the
+task then returns to its agent's queue.
+```
+
+**A request is aimed at one run, not at the task.** If the holder dies before
+acting, the request lapses rather than passing to whoever picks the task up
+next -- that run was never asked anything.
 
 ## Two agents, two machines
 

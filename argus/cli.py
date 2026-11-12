@@ -162,8 +162,20 @@ def cmd_heartbeat(args) -> int:
     if args.session:
         arguments["session"] = args.session
     payload = Client(s.url, s.key).call("chat_heartbeat", _with_agent(args, arguments))
-    _emit(args, payload, lambda p: print(
-        f"{p['session']} is {p['state']}, lease until {p['lease_expires_at']}"))
+
+    def render(p):
+        print(f"{p['session']} is {p['state']}, lease until "
+              f"{p['lease_expires_at']}")
+        # THE DELIVERY POINT. A heartbeat that printed only the lease would
+        # make cancellation invisible to anyone driving this by hand, and an
+        # agent scripting against --json would be the only one who ever saw it.
+        for ask in p.get("stop_requests") or []:
+            print(f"  STOP {ask['short']} ({ask['title']}) "
+                  f"- asked by {ask['requested_by']}: {ask['reason']}")
+        if p.get("stop_requests"):
+            print("  Stop if you can, then `argus report <task> cancelled`. "
+                  "If you will not, say so: nobody can tell from the hub.")
+    _emit(args, payload, render)
     return 0
 
 
@@ -563,6 +575,42 @@ def _ctx_report(scope: str) -> dict | None:
         return None
 
 
+def cmd_cancel(args) -> int:
+    s = _session_or_exit(args)
+    payload = Client(s.url, s.key).call("task_cancel", _with_agent(args, {
+        "task": args.task, "reason": args.reason}))
+
+    def render(p):
+        if p["state"] == "unsupported":
+            print(f"{p['short']}: {p['runtime'] or 'that runtime'} cannot be "
+                  "interrupted. The request is on the record and nobody will "
+                  "be told.")
+            return
+        print(f"Asked {p['target_session']} to stop {p['short']}.")
+        print(f"  semantics: {p['cancel_semantics']}. It is told on its next "
+              "heartbeat, so this is not immediate and may never happen.")
+    _emit(args, payload, render)
+    return 0
+
+
+def cmd_runtimes(args) -> int:
+    s = _session_or_exit(args)
+    payload = Client(s.url, s.key).call("chat_runtimes", {})
+
+    def render(p):
+        width = max((len(r["runtime"]) for r in p["runtimes"]), default=8)
+        for r in p["runtimes"]:
+            marks = []
+            if r["supports_streaming"]:
+                marks.append("streams")
+            if r["supports_cancel"]:
+                marks.append(f"stops {r['cancel_semantics']}")
+            print(f"{r['runtime']:<{width}}  {', '.join(marks) or 'neither'}"
+                  f"  {r['notes']}")
+    _emit(args, payload, render)
+    return 0
+
+
 def cmd_context(args) -> int:
     s = _session_or_exit(args)
     client = Client(s.url, s.key)
@@ -844,6 +892,19 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--reason", required=True,
                     help="why it is going to them. The hub requires one")
     sp.set_defaults(func=cmd_handoff)
+
+    sp = sub.add_parser(
+        "cancel", help="ask the run working on a task to stop",
+        description=("A request, not a command. The holder is told on its "
+                     "next heartbeat and decides what to do."))
+    sp.add_argument("task")
+    sp.add_argument("--reason", required=True,
+                    help="why. The run being stopped needs to know")
+    sp.set_defaults(func=cmd_cancel)
+
+    sp = sub.add_parser("runtimes",
+                        help="what each agent runtime can be asked to do")
+    sp.set_defaults(func=cmd_runtimes)
 
     sp = sub.add_parser(
         "context", help="the decisions governing a task's paths",
