@@ -15,12 +15,23 @@ A box running a hand-copied tarball cannot answer "what are you running".
 The user variant needs lingering (`loginctl enable-linger $USER`) or it stops
 when you log out.
 
+## The wrapper
+
+`pag` fixes the three things a machine must not get wrong per invocation: which
+checkout to import, which key to present, and which hub to talk to. Install it
+as `/usr/local/bin/pag` and override `ARGUS_HOME_DIR`, `ARGUS_KEY_FILE` and
+`ARGUS_HUB` per machine.
+
+It refuses rather than running keyless, because an argus that cannot
+authenticate produces a refusal from the hub that reads like a server problem.
+
 ## Install
 
 ```sh
 # a server
 sudo git clone --branch main https://github.com/khaidao2/argus /opt/argus
 sudo install -m 755 deploy/argus-update /usr/local/bin/argus-update
+sudo install -m 755 deploy/pag /usr/local/bin/pag
 sudo install -m 644 deploy/argus-update.service deploy/argus-update.timer \
     /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now argus-update.timer

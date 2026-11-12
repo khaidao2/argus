@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Run argus against a hub with this machine's own key.
+#
+# WHY A WRAPPER AT ALL. A box that runs an agent needs three things fixed:
+# which checkout to import, which key to present, and which hub to talk to.
+# Typing those on every invocation is how one of them ends up wrong.
+#
+# --url IS PASSED EXPLICITLY, ALWAYS. It was once allowed to fall back to an
+# environment default, and a run that silently talked to a local development
+# hub was reported as having talked to production. An explicit value cannot do
+# that.
+#
+# THE KEY IS NOT IN THE CHECKOUT. ARGUS_KEY_FILE points outside it on purpose:
+# /opt/argus is a clone of a PUBLIC repository, and a secret inside it is one
+# stray `git add -A` from being published.
+#
+# Install as /usr/local/bin/pag and override the three variables per machine.
+set -euo pipefail
+
+ARGUS_HOME_DIR="${ARGUS_HOME_DIR:-/opt/argus}"
+ARGUS_KEY_FILE="${ARGUS_KEY_FILE:-/root/.config/argus/prod.key}"
+ARGUS_HUB="${ARGUS_HUB:-https://mission-control.sentpul.click}"
+
+if [ ! -r "$ARGUS_KEY_FILE" ]; then
+    echo "no key at $ARGUS_KEY_FILE. Issue one from Mission Control, scoped" \
+         "to this machine, and write it there with mode 600." >&2
+    exit 6
+fi
+
+export PYTHONPATH="$ARGUS_HOME_DIR"
+export ARGUS_KEY="$(cat "$ARGUS_KEY_FILE")"
+exec python3 -m argus --url "$ARGUS_HUB" "$@"
