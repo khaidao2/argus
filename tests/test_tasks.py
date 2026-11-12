@@ -355,3 +355,78 @@ def test_a_missing_ctx_binary_is_reported_not_swallowed(
     monkeypatch.setattr(cli.subprocess, "run", no_ctx)
     assert main(["context", "a1b2c3d4", "some/path.py"]) == 2
     assert "ctx is not on PATH" in capsys.readouterr().err
+
+
+# -- runtimes and cancellation ------------------------------------------------
+
+
+def test_cancel_says_it_is_a_request_and_not_immediate(logged_in_hub, capsys):
+    """Nothing can halt a process from here. A command that implied otherwise
+    would let the caller stop waiting for work that is still running."""
+    logged_in_hub.result({"task": "t", "short": "a1b2c3d4", "state": "pending",
+                          "target_session": "run-1", "runtime": "omp",
+                          "cancel_semantics": "graceful"})
+    assert main(["cancel", "a1b2c3d4", "--reason", "wrong migration"]) == 0
+    out = capsys.readouterr().out
+    assert "Asked run-1 to stop a1b2c3d4." in out
+    assert "not immediate" in out
+    args = logged_in_hub.requests[-1]["params"]["arguments"]
+    assert args == {"task": "a1b2c3d4", "reason": "wrong migration"}
+
+
+def test_cancelling_an_uninterruptible_runtime_says_nobody_was_told(
+        logged_in_hub, capsys):
+    logged_in_hub.result({"task": "t", "short": "a1b2c3d4",
+                          "state": "unsupported", "target_session": "run-1",
+                          "runtime": "omp", "cancel_semantics": "none"})
+    assert main(["cancel", "a1b2c3d4", "--reason", "stop"]) == 0
+    out = capsys.readouterr().out
+    assert "cannot be interrupted" in out
+    assert "nobody will be told" in out
+
+
+def test_cancel_without_a_reason_is_refused_by_the_parser(logged_in_hub):
+    with pytest.raises(SystemExit) as code:
+        main(["cancel", "a1b2c3d4"])
+    assert code.value.code == 2
+
+
+def test_a_heartbeat_shows_what_it_has_been_asked_to_stop(
+        logged_in_hub, capsys):
+    """The delivery point. A heartbeat printing only the lease would make
+    cancellation invisible to anyone driving this by hand."""
+    logged_in_hub.result({
+        "session": "run-1", "state": "active",
+        "lease_expires_at": "2026-11-12T03:00:00+00:00",
+        "stop_requests": [{"task": "t", "short": "a1b2c3d4",
+                           "title": "a long migration",
+                           "reason": "it is wrong",
+                           "requested_by": "boss@example.com",
+                           "requested_at": "2026-11-12T02:59:00+00:00"}]})
+    assert main(["heartbeat"]) == 0
+    out = capsys.readouterr().out
+    assert "STOP a1b2c3d4 (a long migration)" in out
+    assert "boss@example.com: it is wrong" in out
+    assert "argus report <task> cancelled" in out
+
+
+def test_a_quiet_heartbeat_says_nothing_about_stopping(logged_in_hub, capsys):
+    logged_in_hub.result({"session": "run-1", "state": "active",
+                          "lease_expires_at": "2026-11-12T03:00:00+00:00",
+                          "stop_requests": []})
+    assert main(["heartbeat"]) == 0
+    assert "STOP" not in capsys.readouterr().out
+
+
+def test_runtimes_shows_what_can_be_stopped(logged_in_hub, capsys):
+    logged_in_hub.result({"runtimes": [
+        {"runtime": "omp", "display_name": "omp", "supports_streaming": False,
+         "supports_cancel": False, "cancel_semantics": "none",
+         "notes": "cheapest"},
+        {"runtime": "agy", "display_name": "Antigravity",
+         "supports_streaming": True, "supports_cancel": True,
+         "cancel_semantics": "graceful", "notes": ""}]})
+    assert main(["runtimes"]) == 0
+    out = capsys.readouterr().out
+    assert "omp" in out and "neither" in out
+    assert "stops graceful" in out
