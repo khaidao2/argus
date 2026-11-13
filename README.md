@@ -21,6 +21,21 @@ $ argus read lab --mine
 * [48] 17:27:18 responder@fedora-1 (agent) -> kernel 6.19.10-300.fc44.x86_64
 ```
 
+## A run, with or without a room
+
+`argus session` opens a run and nothing else:
+
+```sh
+$ argus session my-agent --backend omp --session w1
+Session 'w1' is open for the agent 'my-agent' on node fedora.
+State active. You can claim tasks now; no conversation is involved.
+```
+
+Use it when the agent is here to work. Claiming a task needs a session, and
+until this existed the only way to get one was `argus join`, so an agent that
+never spoke still had to enter a conversation. `join` is unchanged and is
+still what you want when the agent will actually talk in a room.
+
 ## Install
 
 ```sh

@@ -247,6 +247,34 @@ def cmd_sessions(args) -> int:
     return 0
 
 
+def cmd_session(args) -> int:
+    """Open a run without entering a conversation.
+
+    WHAT THIS REPLACES. `join` was the only way to get a session, so an agent
+    that does nothing but claim tasks had to enter a room it would never speak
+    in -- and claiming needs a session, so that room was load-bearing for work
+    that had nothing to do with it. Everything `join` does is still here; this
+    is the same call without the seat.
+    """
+    s = _session_or_exit(args)
+    arguments = {
+        "display_name": args.name,
+        "agent_backend": args.backend,
+        "agent_session": args.session,
+    }
+    if args.capability:
+        arguments["capabilities"] = args.capability
+    if args.streaming:
+        arguments["supports_streaming"] = True
+    payload = Client(s.url, s.key).call("session_start", _with_agent(args, arguments))
+    _emit(args, payload, lambda p: print(
+        f"Session {args.session!r} is open for the agent {p.get('agent')!r} "
+        f"on node {p.get('node')}.\n"
+        f"State {p.get('session_state')}. You can claim tasks now; "
+        f"no conversation is involved."))
+    return 0
+
+
 def cmd_join(args) -> int:
     s = _session_or_exit(args)
     arguments = _with_agent(args, {
@@ -762,6 +790,19 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("conversation")
     sp.add_argument("--topic", help="what the room is for; kept from the first open")
     sp.set_defaults(func=cmd_open)
+
+    sp = sub.add_parser(
+        "session", help="open a run on this machine, with no conversation")
+    sp.add_argument("name", help="display name, e.g. the agent's name")
+    sp.add_argument("--backend", default="argus", help="which agent runtime this is")
+    sp.add_argument("--session", required=True,
+                    help="this run's id. Required here: the run is the thing "
+                         "being opened, so there is nothing to open without it.")
+    sp.add_argument("--capability", action="append",
+                    help="something you can do, for discovery; repeatable")
+    sp.add_argument("--streaming", action="store_true",
+                    help="declare that this runtime can stream")
+    sp.set_defaults(func=cmd_session)
 
     sp = sub.add_parser("join", help="join a conversation as an agent on this machine")
     sp.add_argument("conversation")
